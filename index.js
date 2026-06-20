@@ -44,9 +44,22 @@ async function run() {
     const  productsCollections= database.collection("products");
 
 
-    
+    app.get('/api/products', async(req,res)  =>{
+      const quary ={};
+      if(req,quary._id){
+        quary._id = req.query._id;
+      }
 
-app.post('/products'  , async(req, res) => {
+      if(req.query.status){
+        quary.status=req.query.status;
+      }
+const cursor = productsCollections.find(quary);
+const result = await cursor.toArray();
+res.send(result)
+
+    })
+
+app.post('/api/products'  , async(req, res) => {
     const product = req.body;
     const result = await productsCollections.insertOne(product);
     res.send(result);
@@ -58,7 +71,7 @@ app.post('/products'  , async(req, res) => {
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } finally {
     // Ensures that the client will close when you finish/error
-    await client.close();
+   
   }
 }
 run().catch(console.dir);
