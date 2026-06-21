@@ -12,7 +12,7 @@ app.use(express.json());
 
 
 
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 
 
 app.get('/', (req, res) => {
@@ -61,9 +61,43 @@ res.send(result)
 
 app.post('/api/products'  , async(req, res) => {
     const product = req.body;
+    console.log(product)
     const result = await productsCollections.insertOne(product);
     res.send(result);
+    
 })
+
+// ---- EDIT a product ----
+app.patch('/api/products/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const updatedFields = req.body;
+
+    // never let the client overwrite _id
+    delete updatedFields._id;
+
+    const result = await productsCollections.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updatedFields }
+    );
+    res.send(result);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ error: 'Failed to update product' });
+  }
+});
+
+// ---- DELETE a product ----
+app.delete('/api/products/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const result = await productsCollections.deleteOne({ _id: new ObjectId(id) });
+    res.send(result);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ error: 'Failed to delete product' });
+  }
+});
 
 
     // Send a ping to confirm a successful connection
