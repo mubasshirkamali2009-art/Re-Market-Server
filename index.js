@@ -39,6 +39,7 @@ async function run() {
     const database = client.db("re-market");
     const productsCollections = database.collection("products");
     const wishlistCollections = database.collection("wishlists"); // NEW
+    const cartCollections = database.collection("carts"); // NEW
 
     app.get('/api/products', async (req, res) => {
       const quary = {};
@@ -206,6 +207,97 @@ app.get('/api/products/:id', async (req, res) => {
       } catch (error) {
         console.error(error);
         res.status(500).send({ error: 'Failed to remove from wishlist' });
+      }
+    });
+
+    // =====================================================
+    // CART ENDPOINTS (NEW)
+    // =====================================================
+
+    // ---- GET cart for a user ----
+    // GET /api/cart?email=user@example.com
+    app.get('/api/cart', async (req, res) => {
+      try {
+        const email = req.query.email;
+        if (!email) {
+          return res.status(400).send({ error: 'email query param is required' });
+        }
+
+        const cartDocs = await cartCollections.find({ userEmail: email }).toArray();
+
+        const productIds = cartDocs.map(doc => new ObjectId(doc.productId));
+        const products = await productsCollections
+          .find({ _id: { $in: productIds } })
+          .toArray();
+
+        const merged = products.map(product => {
+          const cartEntry = cartDocs.find(c => c.productId === product._id.toString());
+          return { ...product, cartId: cartEntry?._id };
+        });
+
+        res.send(merged);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: 'Failed to load cart' });
+      }
+    });
+
+    // ---- CHECK if a product is in a user's cart ----
+    // GET /api/cart/check?email=user@example.com&productId=xxx
+    app.get('/api/cart/check', async (req, res) => {
+      try {
+        const { email, productId } = req.query;
+        const existing = await cartCollections.findOne({
+          userEmail: email,
+          productId: productId,
+        });
+        res.send({ inCart: !!existing, cartId: existing?._id || null });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: 'Failed to check cart' });
+      }
+    });
+
+    // ---- ADD to cart ----
+    // POST /api/cart  body: { userEmail, productId }
+    app.post('/api/cart', async (req, res) => {
+      try {
+        const { userEmail, productId } = req.body;
+        if (!userEmail || !productId) {
+          return res.status(400).send({ error: 'userEmail and productId are required' });
+        }
+
+        const existing = await cartCollections.findOne({ userEmail, productId });
+        if (existing) {
+          return res.send({ alreadyExists: true, cartId: existing._id });
+        }
+
+        const result = await cartCollections.insertOne({
+          userEmail,
+          productId,
+          createdAt: new Date(),
+        });
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: 'Failed to add to cart' });
+      }
+    });
+
+    // ---- REMOVE from cart ----
+    // DELETE /api/cart  body: { userEmail, productId }
+    app.delete('/api/cart', async (req, res) => {
+      try {
+        const { userEmail, productId } = req.body;
+        if (!userEmail || !productId) {
+          return res.status(400).send({ error: 'userEmail and productId are required' });
+        }
+
+        const result = await cartCollections.deleteOne({ userEmail, productId });
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: 'Failed to remove from cart' });
       }
     });
 
