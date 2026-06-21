@@ -33,7 +33,7 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    // Connect the client to the server	(optional starting in v4.7)
+    // Connect the client to the server (optional starting in v4.7)
     await client.connect();
 
     const database = client.db("re-market");
@@ -97,7 +97,7 @@ async function run() {
     });
 
     // =====================================================
-    // WISHLIST ENDPOINTS (NEW)
+    // WISHLIST ENDPOINTS
     // =====================================================
 
     // ---- GET wishlist for a user ----
@@ -128,25 +128,23 @@ async function run() {
       }
     });
 
+    app.get('/api/products/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ error: 'Invalid product id' });
+        }
 
-
-app.get('/api/products/:id', async (req, res) => {
-  try {
-    const id = req.params.id;
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).send({ error: 'Invalid product id' });
-    }
-
-    const product = await productsCollections.findOne({ _id: new ObjectId(id) });
-    if (!product) {
-      return res.status(404).send({ error: 'Product not found' });
-    }
-    res.send(product);
-  } catch (error) {
-    console.error(error);
-    res.status(500).send({ error: 'Failed to load product' });
-  }
-});
+        const product = await productsCollections.findOne({ _id: new ObjectId(id) });
+        if (!product) {
+          return res.status(404).send({ error: 'Product not found' });
+        }
+        res.send(product);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: 'Failed to load product' });
+      }
+    });
 
     // ---- CHECK if a product is wishlisted by a user ----
     // GET /api/wishlist/check?email=user@example.com&productId=xxx
@@ -163,9 +161,6 @@ app.get('/api/products/:id', async (req, res) => {
         res.status(500).send({ error: 'Failed to check wishlist' });
       }
     });
-
-
-
 
     // ---- ADD to wishlist (heart click ON) ----
     // POST /api/wishlist  body: { userEmail, productId }
@@ -211,7 +206,7 @@ app.get('/api/products/:id', async (req, res) => {
     });
 
     // =====================================================
-    // CART ENDPOINTS (NEW)
+    // CART ENDPOINTS
     // =====================================================
 
     // ---- GET cart for a user ----
@@ -298,6 +293,63 @@ app.get('/api/products/:id', async (req, res) => {
       } catch (error) {
         console.error(error);
         res.status(500).send({ error: 'Failed to remove from cart' });
+      }
+    });
+
+    // =====================================================
+    // PROFILE MANAGEMENT ENDPOINTS
+    // =====================================================
+
+    // ---- GET User Profile Details ----
+    // GET /api/profile?email=user@example.com
+    app.get('/api/profile', async (req, res) => {
+      try {
+        const email = req.query.email;
+        if (!email) {
+          return res.status(400).send({ error: 'Email parameter is required' });
+        }
+
+        const usersCollection = database.collection("users");
+        const user = await usersCollection.findOne({ email: email });
+
+        if (!user) {
+          return res.status(404).send({ error: 'User profile not found' });
+        }
+
+        delete user.password;
+        res.send(user);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: 'Failed to retrieve profile details' });
+      }
+    });
+
+    // ---- UPDATE Personal Info (Name, Image, Phone, Address) ----
+    // PATCH /api/profile  body: { email, name, image, phone, address }
+    app.patch('/api/profile', async (req, res) => {
+      try {
+        const { email, name, image, phone, address } = req.body;
+        if (!email) {
+          return res.status(400).send({ error: 'User identification email is required' });
+        }
+
+        const usersCollection = database.collection("users");
+
+        const updatedFields = {};
+        if (name !== undefined) updatedFields.name = name;
+        if (image !== undefined) updatedFields.image = image;
+        if (phone !== undefined) updatedFields.phone = phone;
+        if (address !== undefined) updatedFields.address = address;
+
+        const result = await usersCollection.updateOne(
+          { email: email },
+          { $set: updatedFields }
+        );
+
+        res.send({ success: true, message: 'Profile details updated successfully', result });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: 'Failed to update profile values' });
       }
     });
 
