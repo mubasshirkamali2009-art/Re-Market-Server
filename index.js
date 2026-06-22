@@ -38,30 +38,40 @@ async function run() {
 
     const database = client.db("re-market");
     const productsCollections = database.collection("products");
-    const wishlistCollections = database.collection("wishlists"); // NEW
-    const cartCollections = database.collection("carts"); // NEW
+    const wishlistCollections = database.collection("wishlists");
+    const cartCollections = database.collection("carts");
+
+    // =====================================================
+    // PRODUCTS ENDPOINTS
+    // =====================================================
 
     app.get('/api/products', async (req, res) => {
       const quary = {};
-      if (req.query._id) {            // <-- fixed: was "req,quary._id" (typo)
+      if (req.query._id) {
         quary._id = req.query._id;
       }
-
       if (req.query.status) {
         quary.status = req.query.status;
       }
-      const cursor = productsCollections.find(quary);
-      const result = await cursor.toArray();
-      res.send(result)
 
+      // Sort by createdAt descending — newest products first
+      const result = await productsCollections
+        .find(quary)
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      res.send(result);
     })
 
     app.post('/api/products', async (req, res) => {
       const product = req.body;
+
+      // Always stamp createdAt so newest-first sorting works correctly
+      product.createdAt = new Date();
+
       console.log(product)
       const result = await productsCollections.insertOne(product);
       res.send(result);
-
     })
 
     // ---- EDIT a product ----
@@ -96,12 +106,30 @@ async function run() {
       }
     });
 
+    // ---- GET single product by id ----
+    app.get('/api/products/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ error: 'Invalid product id' });
+        }
+
+        const product = await productsCollections.findOne({ _id: new ObjectId(id) });
+        if (!product) {
+          return res.status(404).send({ error: 'Product not found' });
+        }
+        res.send(product);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: 'Failed to load product' });
+      }
+    });
+
     // =====================================================
     // WISHLIST ENDPOINTS
     // =====================================================
 
     // ---- GET wishlist for a user ----
-    // GET /api/wishlist?email=user@example.com
     app.get('/api/wishlist', async (req, res) => {
       try {
         const email = req.query.email;
@@ -128,26 +156,7 @@ async function run() {
       }
     });
 
-    app.get('/api/products/:id', async (req, res) => {
-      try {
-        const id = req.params.id;
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({ error: 'Invalid product id' });
-        }
-
-        const product = await productsCollections.findOne({ _id: new ObjectId(id) });
-        if (!product) {
-          return res.status(404).send({ error: 'Product not found' });
-        }
-        res.send(product);
-      } catch (error) {
-        console.error(error);
-        res.status(500).send({ error: 'Failed to load product' });
-      }
-    });
-
     // ---- CHECK if a product is wishlisted by a user ----
-    // GET /api/wishlist/check?email=user@example.com&productId=xxx
     app.get('/api/wishlist/check', async (req, res) => {
       try {
         const { email, productId } = req.query;
@@ -162,8 +171,7 @@ async function run() {
       }
     });
 
-    // ---- ADD to wishlist (heart click ON) ----
-    // POST /api/wishlist  body: { userEmail, productId }
+    // ---- ADD to wishlist ----
     app.post('/api/wishlist', async (req, res) => {
       try {
         const { userEmail, productId } = req.body;
@@ -188,8 +196,7 @@ async function run() {
       }
     });
 
-    // ---- REMOVE from wishlist (heart click OFF / unlike) ----
-    // DELETE /api/wishlist  body: { userEmail, productId }
+    // ---- REMOVE from wishlist ----
     app.delete('/api/wishlist', async (req, res) => {
       try {
         const { userEmail, productId } = req.body;
@@ -210,7 +217,6 @@ async function run() {
     // =====================================================
 
     // ---- GET cart for a user ----
-    // GET /api/cart?email=user@example.com
     app.get('/api/cart', async (req, res) => {
       try {
         const email = req.query.email;
@@ -238,7 +244,6 @@ async function run() {
     });
 
     // ---- CHECK if a product is in a user's cart ----
-    // GET /api/cart/check?email=user@example.com&productId=xxx
     app.get('/api/cart/check', async (req, res) => {
       try {
         const { email, productId } = req.query;
@@ -254,7 +259,6 @@ async function run() {
     });
 
     // ---- ADD to cart ----
-    // POST /api/cart  body: { userEmail, productId }
     app.post('/api/cart', async (req, res) => {
       try {
         const { userEmail, productId } = req.body;
@@ -280,7 +284,6 @@ async function run() {
     });
 
     // ---- REMOVE from cart ----
-    // DELETE /api/cart  body: { userEmail, productId }
     app.delete('/api/cart', async (req, res) => {
       try {
         const { userEmail, productId } = req.body;
@@ -301,8 +304,6 @@ async function run() {
     // =====================================================
 
     // ---- GET User Profile Details ----
-    // GET /api/profile/:id
-    // ✅ Same pattern as products GET — fetch by _id, not by a field that could change
     app.get('/api/profile/:id', async (req, res) => {
       try {
         const { id } = req.params;
@@ -325,9 +326,7 @@ async function run() {
       }
     });
 
-    // ---- UPDATE Personal Info (Name, Image, Phone, Address) ----
-    // PATCH /api/profile/:id  body: { name, image, phone, address }
-    // ✅ Same pattern as products edit — target by _id, not by a field that could change
+    // ---- UPDATE Personal Info ----
     app.patch('/api/profile/:id', async (req, res) => {
       try {
         const { id } = req.params;
@@ -360,7 +359,6 @@ async function run() {
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } finally {
     // Ensures that the client will close when you finish/error
-
   }
 }
 run().catch(console.dir);
