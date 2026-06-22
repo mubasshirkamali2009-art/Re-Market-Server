@@ -410,6 +410,71 @@ async function run() {
       }
     });
 
+    // =====================================================
+    // DYNAMIC ROLE-BASED DASHBOARD METRICS
+    // =====================================================
+    app.get('/api/dashboard/stats', async (req, res) => {
+      try {
+        const { email } = req.query;
+        if (!email) {
+          return res.status(400).send({ error: 'Email parameter is required' });
+        }
+
+        const usersCollection = database.collection("user");
+        
+        // Find the user to check their dynamic role type
+        const user = await usersCollection.findOne({ email: email });
+        if (!user) {
+          return res.status(404).send({ error: 'User registration profile not found' });
+        }
+
+        const role = user.role || 'buyer';
+        let metrics = {};
+
+        if (role === 'buyer') {
+          const totalCarts = await cartCollections.countDocuments({ userEmail: email });
+          const totalOrders = await ordersCollections.countDocuments({ "buyerInfo.email": email });
+          const savedItems = await wishlistCollections.countDocuments({ userEmail: email });
+          
+          // Calculate cumulative spending amount for non-cancelled buyer orders
+          const buyerOrders = await ordersCollections.find({ 
+            "buyerInfo.email": email, 
+            orderStatus: { $ne: 'cancelled' } 
+          }).toArray();
+          const totalSpent = buyerOrders.reduce((acc, curr) => acc + ((curr.productSnapshot?.price || 0) * (curr.quantity || 1)), 0);
+
+          metrics = { totalCarts, totalOrders, savedItems, totalSpent };
+        } 
+        else if (role === 'seller') {
+          const totalProducts = await productsCollections.countDocuments({ "sellerInfo.email": email });
+          const totalCanceled = await ordersCollections.countDocuments({ "sellerInfo.email": email, orderStatus: 'cancelled' });
+          const totalPending = await ordersCollections.countDocuments({ "sellerInfo.email": email, orderStatus: 'processing' });
+          
+          // Calculate absolute gross marketplace item sales revenue
+          const sellerOrders = await ordersCollections.find({ 
+            "sellerInfo.email": email, 
+            orderStatus: { $ne: 'cancelled' } 
+          }).toArray();
+          const totalSalesRevenue = sellerOrders.reduce((acc, curr) => acc + ((curr.productSnapshot?.price || 0) * (curr.quantity || 1)), 0);
+
+          metrics = { totalProducts, totalCanceled, totalPending, totalSalesRevenue };
+        } 
+        else if (role === 'admin') {
+          const totalUsers = await usersCollection.countDocuments({});
+          const totalBuyers = await usersCollection.countDocuments({ role: 'buyer' });
+          const totalSellers = await usersCollection.countDocuments({ role: 'seller' });
+          const totalProducts = await productsCollections.countDocuments({});
+
+          metrics = { totalUsers, totalBuyers, totalSellers, totalProducts };
+        }
+
+        res.send({ role, metrics });
+      } catch (error) {
+        console.error("Dashboard dynamic context load failure:", error);
+        res.status(500).send({ error: 'Failed to build structural dashboard parameters' });
+      }
+    });
+
     // ---- CANCEL an order (buyer OR seller can cancel — restores stock) ----
     app.patch('/api/orders/:id/cancel', async (req, res) => {
       try {
@@ -574,6 +639,156 @@ async function run() {
       } catch (error) {
         console.error("Failed to retrieve reviews:", error);
         res.status(500).send({ error: 'Database error fetching review data' });
+      }
+    });
+
+
+    app.get('/api/admin/orders', async (req, res) => {
+      try {
+        const result = await ordersCollections
+          .find({})
+          .sort({ createdAt: -1 })
+          .toArray();
+        res.send(result);
+      } catch (error) {
+        console.error("Admin orders load failure:", error);
+        res.status(500).send({ error: 'Failed to aggregate global system orders.' });
+      }
+    });
+
+    // ---- ADMIN FORCE OVERRIDE CANCEL ORDER ----
+    app.patch('/api/admin/orders/:id/cancel', async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { email } = req.body; // Tracking which admin initiated the override
+
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ error: 'Invalid order id format.' });
+        }
+
+        const order = await ordersCollections.findOne({ _id: new ObjectId(id) });
+        if (!order) {
+          return res.status(404).send({ error: 'Target order document not found.' });
+        }
+        if (order.orderStatus === 'cancelled') {
+          return res.status(400).send({ error: 'Order is already cancelled.' });
+        }
+
+        // Restock items dynamically back into store inventory pool
+        if (order.productId && ObjectId.isValid(order.productId)) {
+          await productsCollections.updateOne(
+            { _id: new ObjectId(order.productId) },
+            { $inc: { stock: order.quantity || 1 } }
+          );
+        }
+
+        const result = await ordersCollections.updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $set: {
+              orderStatus: 'cancelled',
+              cancelledAt: new Date(),
+              cancelledBy: `admin (${email || 'system'})`,
+            },
+          }
+        );
+
+        res.send({ success: true, message: 'Order terminated by Admin authority.', result });
+      } catch (error) {
+        console.error("Admin override cancellation failure:", error);
+        res.status(500).send({ error: 'Failed to execute administrative cancellation.' });
+      }
+    });
+
+
+    app.get('/api/admin/products', async (req, res) => {
+      try {
+        const result = await productsCollections
+          .find({})
+          .sort({ createdAt: -1 })
+          .toArray();
+        res.send(result);
+      } catch (error) {
+        console.error("Admin products load failure:", error);
+        res.status(500).send({ error: 'Failed to aggregate global system products.' });
+      }
+    });
+
+    // ---- ADMIN FORCE DELETE PRODUCT ----
+    app.delete('/api/admin/products/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ error: 'Invalid product ID format.' });
+        }
+
+        const result = await productsCollections.deleteOne({ _id: new ObjectId(id) });
+        
+        if (result.deletedCount === 0) {
+          return res.status(404).send({ error: 'Target product document not found.' });
+        }
+
+        res.send({ success: true, message: 'Product permanently purged by Admin authority.', result });
+      } catch (error) {
+        console.error("Admin override product deletion failure:", error);
+        res.status(500).send({ error: 'Failed to execute administrative product removal.' });
+      }
+    });
+
+
+    // ---- ADMIN GET ALL SYSTEM USERS ----
+    app.get('/api/admin/users', async (req, res) => {
+      try {
+        const usersCollection = database.collection("user");
+        const result = await usersCollection
+          .find({})
+          .sort({ createdAt: -1 })
+          .toArray();
+        
+        // Remove sensitive credentials before returning datasets
+        const safeUsers = result.map(u => {
+          delete u.password;
+          return u;
+        });
+        
+        res.send(safeUsers);
+      } catch (error) {
+        console.error("Admin users load failure:", error);
+        res.status(500).send({ error: 'Failed to aggregate global system users.' });
+      }
+    });
+
+    // ---- ADMIN FORCE PERMANENTLY DELETE A USER ----
+    app.delete('/api/admin/users/:id', async (req, res) => {
+      try {
+        const { id } = req.params;
+
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ error: 'Invalid user ID format.' });
+        }
+
+        const usersCollection = database.collection("user");
+        
+        // Prevent accidental self-deletion of an Admin profile
+        const targetUser = await usersCollection.findOne({ _id: new ObjectId(id) });
+        if (targetUser && targetUser.role === "admin") {
+          return res.status(403).send({ error: "Administrative accounts cannot be purged via this interface." });
+        }
+
+        const result = await usersCollection.deleteOne({ _id: new ObjectId(id) });
+
+        if (result.deletedCount === 0) {
+          return res.status(404).send({ error: 'Target user account not found.' });
+        }
+
+        res.send({ 
+          success: true, 
+          message: 'User profile permanently dropped from database system records.' 
+        });
+      } catch (error) {
+        console.error("Admin user deletion failure:", error);
+        res.status(500).send({ error: 'Failed to complete administrative user deletion.' });
       }
     });
 
