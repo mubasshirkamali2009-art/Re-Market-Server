@@ -6,19 +6,14 @@ const app = express()
 const port = 5000
 require('dotenv').config()
 
-
 app.use(cors())
 app.use(express.json());
 
-
-
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
-
 
 app.get('/', (req, res) => {
   res.send('Hello World!')
 })
-
 
 const uri = process.env.MONGO_DB_URI;
 
@@ -41,6 +36,7 @@ async function run() {
     const wishlistCollections = database.collection("wishlists");
     const cartCollections = database.collection("carts");
     const ordersCollections = database.collection("orders");
+    const reviewsCollections = database.collection("reviews");
 
     // =====================================================
     // PRODUCTS ENDPOINTS
@@ -305,8 +301,6 @@ async function run() {
     // =====================================================
 
     // ---- PLACE an order (called by BuyNowButton) ----
-    // Atomically decrements stock so two buyers clicking "Buy Now" at the
-    // same time can never oversell a product.
     app.post('/api/orders', async (req, res) => {
       try {
         const { buyerInfo, sellerInfo, productId, paymentStatus, quantity } = req.body;
@@ -326,16 +320,12 @@ async function run() {
           { returnDocument: 'after' }
         );
 
-        // Different mongodb driver versions return the doc differently —
-        // handle both `{ value: doc }` and a direct `doc` shape.
         const updatedProduct = stockUpdate?.value ?? stockUpdate;
 
         if (!updatedProduct) {
           return res.status(400).send({ error: 'Not enough stock available' });
         }
 
-        // Store a snapshot of the product at order time — so the order still
-        // shows correct name/price/image even if the product changes later.
         const order = {
           buyerInfo,
           sellerInfo: sellerInfo || updatedProduct.sellerInfo || {},
@@ -396,11 +386,35 @@ async function run() {
       }
     });
 
+    // =====================================================
+    // ANALYTICS STATS METRICS
+    // =====================================================
+    app.get('/api/stats', async (req, res) => {
+      try {
+        const usersCollection = database.collection("user");
+
+        const totalProducts = await productsCollections.countDocuments({});
+        const totalSellers = await usersCollection.countDocuments({ role: "seller" });
+        const totalBuyers = await usersCollection.countDocuments({ role: "buyer" });
+        const totalSales = await ordersCollections.countDocuments({});
+
+        res.send({
+          totalProducts,
+          totalSellers,
+          totalBuyers,
+          totalSales
+        });
+      } catch (error) {
+        console.error("Failed to fetch stats metrics:", error);
+        res.status(500).send({ error: 'Failed to aggregate statistics' });
+      }
+    });
+
     // ---- CANCEL an order (buyer OR seller can cancel — restores stock) ----
     app.patch('/api/orders/:id/cancel', async (req, res) => {
       try {
         const { id } = req.params;
-        const { email } = req.body; // person requesting the cancellation
+        const { email } = req.body;
 
         if (!ObjectId.isValid(id)) {
           return res.status(400).send({ error: 'Invalid order id' });
@@ -417,14 +431,12 @@ async function run() {
           return res.status(400).send({ error: 'Order is already cancelled' });
         }
 
-        // Only the buyer who placed it OR the seller who owns the product can cancel.
         const isBuyer = order.buyerInfo?.email === email;
         const isSeller = order.sellerInfo?.email === email;
         if (!isBuyer && !isSeller) {
           return res.status(403).send({ error: 'Not authorized to cancel this order' });
         }
 
-        // Restore stock back to the product — same quantity that was deducted.
         if (order.productId && ObjectId.isValid(order.productId)) {
           await productsCollections.updateOne(
             { _id: new ObjectId(order.productId) },
@@ -483,7 +495,6 @@ async function run() {
         const { id } = req.params;
         const updatedFields = req.body;
 
-        // never let the client overwrite _id or email
         delete updatedFields._id;
         delete updatedFields.email;
 
@@ -505,6 +516,68 @@ async function run() {
       }
     });
 
+    // =====================================================
+    // REVIEWS & RATINGS ENDPOINTS
+    // =====================================================
+
+    // ---- SAVE / SUBMIT A NEW REVIEW ----
+    app.post('/api/reviews', async (req, res) => {
+      try {
+        const { productId, reviewerInfo, rating, comment } = req.body;
+
+        if (!productId || !reviewerInfo?.userId || !rating || !comment) {
+          return res.status(400).send({ error: "Missing required review input fields" });
+        }
+
+        if (!ObjectId.isValid(productId)) {
+          return res.status(400).send({ error: "Invalid product ID format provided" });
+        }
+
+        const reviewDocument = {
+          productId: new ObjectId(productId),
+          reviewerInfo: {
+            userId: reviewerInfo.userId,
+            name: reviewerInfo.name
+          },
+          rating: Number(rating),
+          comment: comment.trim(),
+          createdAt: new Date()
+        };
+
+        const result = await reviewsCollections.insertOne(reviewDocument);
+        res.status(201).send({ _id: result.insertedId, ...reviewDocument });
+      } catch (error) {
+        console.error("Failed to post product review:", error);
+        res.status(500).send({ error: 'Database error saving review reference' });
+      }
+    });
+
+    // ---- GET REVIEWS FOR A SPECIFIC PRODUCT ----
+    app.get('/api/reviews', async (req, res) => {
+      try {
+        const { productId } = req.query;
+
+        if (!productId) {
+          return res.status(400).send({ error: "productId query parameter is required" });
+        }
+
+        if (!ObjectId.isValid(productId)) {
+          return res.status(400).send({ error: "Invalid product ID format" });
+        }
+
+        const reviews = await reviewsCollections
+          .find({ productId: new ObjectId(productId) })
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.send(reviews);
+      } catch (error) {
+        console.error("Failed to retrieve reviews:", error);
+        res.status(500).send({ error: 'Database error fetching review data' });
+      }
+    });
+
+
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
@@ -513,7 +586,6 @@ async function run() {
   }
 }
 run().catch(console.dir);
-
 
 app.listen(port, () => {
   console.log(`Example app listening on port ${port}`)
