@@ -301,19 +301,20 @@ async function run() {
     // =====================================================
 
     // ---- GET User Profile Details ----
-    // GET /api/profile?email=user@example.com
-    app.get('/api/profile', async (req, res) => {
+    // GET /api/profile/:id
+    // ✅ Same pattern as products GET — fetch by _id, not by a field that could change
+    app.get('/api/profile/:id', async (req, res) => {
       try {
-        const email = req.query.email;
-        if (!email) {
-          return res.status(400).send({ error: 'Email parameter is required' });
+        const { id } = req.params;
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ error: 'Invalid user id' });
         }
 
-        const usersCollection = database.collection("users");
-        const user = await usersCollection.findOne({ email: email });
+        const usersCollection = database.collection("user");
+        const user = await usersCollection.findOne({ _id: new ObjectId(id) });
 
         if (!user) {
-          return res.status(404).send({ error: 'User profile not found' });
+          return res.status(404).send({ error: 'User not found' });
         }
 
         delete user.password;
@@ -325,26 +326,27 @@ async function run() {
     });
 
     // ---- UPDATE Personal Info (Name, Image, Phone, Address) ----
-    // PATCH /api/profile  body: { email, name, image, phone, address }
-    app.patch('/api/profile', async (req, res) => {
+    // PATCH /api/profile/:id  body: { name, image, phone, address }
+    // ✅ Same pattern as products edit — target by _id, not by a field that could change
+    app.patch('/api/profile/:id', async (req, res) => {
       try {
-        const { email, name, image, phone, address } = req.body;
-        if (!email) {
-          return res.status(400).send({ error: 'User identification email is required' });
-        }
+        const { id } = req.params;
+        const updatedFields = req.body;
 
-        const usersCollection = database.collection("users");
+        // never let the client overwrite _id or email
+        delete updatedFields._id;
+        delete updatedFields.email;
 
-        const updatedFields = {};
-        if (name !== undefined) updatedFields.name = name;
-        if (image !== undefined) updatedFields.image = image;
-        if (phone !== undefined) updatedFields.phone = phone;
-        if (address !== undefined) updatedFields.address = address;
+        const usersCollection = database.collection("user");
 
         const result = await usersCollection.updateOne(
-          { email: email },
+          { _id: new ObjectId(id) },
           { $set: updatedFields }
         );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ error: 'No user found with this id' });
+        }
 
         res.send({ success: true, message: 'Profile details updated successfully', result });
       } catch (error) {
