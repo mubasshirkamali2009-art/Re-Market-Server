@@ -40,6 +40,7 @@ async function run() {
     const productsCollections = database.collection("products");
     const wishlistCollections = database.collection("wishlists");
     const cartCollections = database.collection("carts");
+    const ordersCollections = database.collection("orders");
 
     // =====================================================
     // PRODUCTS ENDPOINTS
@@ -296,6 +297,156 @@ async function run() {
       } catch (error) {
         console.error(error);
         res.status(500).send({ error: 'Failed to remove from cart' });
+      }
+    });
+
+    // =====================================================
+    // ORDERS ENDPOINTS
+    // =====================================================
+
+    // ---- PLACE an order (called by BuyNowButton) ----
+    // Atomically decrements stock so two buyers clicking "Buy Now" at the
+    // same time can never oversell a product.
+    app.post('/api/orders', async (req, res) => {
+      try {
+        const { buyerInfo, sellerInfo, productId, paymentStatus, quantity } = req.body;
+        const qty = Number(quantity) || 1;
+
+        if (!buyerInfo?.email || !productId) {
+          return res.status(400).send({ error: 'buyerInfo.email and productId are required' });
+        }
+        if (!ObjectId.isValid(productId)) {
+          return res.status(400).send({ error: 'Invalid productId' });
+        }
+
+        // Only decrement if there's enough stock — prevents going negative.
+        const stockUpdate = await productsCollections.findOneAndUpdate(
+          { _id: new ObjectId(productId), stock: { $gte: qty } },
+          { $inc: { stock: -qty } },
+          { returnDocument: 'after' }
+        );
+
+        // Different mongodb driver versions return the doc differently —
+        // handle both `{ value: doc }` and a direct `doc` shape.
+        const updatedProduct = stockUpdate?.value ?? stockUpdate;
+
+        if (!updatedProduct) {
+          return res.status(400).send({ error: 'Not enough stock available' });
+        }
+
+        // Store a snapshot of the product at order time — so the order still
+        // shows correct name/price/image even if the product changes later.
+        const order = {
+          buyerInfo,
+          sellerInfo: sellerInfo || updatedProduct.sellerInfo || {},
+          productId,
+          productSnapshot: {
+            name: updatedProduct.name,
+            image: updatedProduct.images?.[0] || null,
+            price: updatedProduct.price,
+            category: updatedProduct.category,
+          },
+          quantity: qty,
+          paymentStatus: paymentStatus || 'paid',
+          orderStatus: 'processing',
+          createdAt: new Date(),
+        };
+
+        const result = await ordersCollections.insertOne(order);
+        res.send({ ...result, insertedOrder: { ...order, _id: result.insertedId } });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: 'Failed to place order' });
+      }
+    });
+
+    // ---- GET orders for a buyer (My Orders page) ----
+    app.get('/api/orders', async (req, res) => {
+      try {
+        const email = req.query.email;
+        if (!email) return res.status(400).send({ error: 'email query param is required' });
+
+        const result = await ordersCollections
+          .find({ "buyerInfo.email": email })
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: 'Failed to load orders' });
+      }
+    });
+
+    // ---- GET orders for a seller (Manage Orders page) ----
+    app.get('/api/orders/seller', async (req, res) => {
+      try {
+        const email = req.query.email;
+        if (!email) return res.status(400).send({ error: 'email query param is required' });
+
+        const result = await ordersCollections
+          .find({ "sellerInfo.email": email })
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: 'Failed to load seller orders' });
+      }
+    });
+
+    // ---- CANCEL an order (buyer OR seller can cancel — restores stock) ----
+    app.patch('/api/orders/:id/cancel', async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { email } = req.body; // person requesting the cancellation
+
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ error: 'Invalid order id' });
+        }
+        if (!email) {
+          return res.status(400).send({ error: 'email is required' });
+        }
+
+        const order = await ordersCollections.findOne({ _id: new ObjectId(id) });
+        if (!order) {
+          return res.status(404).send({ error: 'Order not found' });
+        }
+        if (order.orderStatus === 'cancelled') {
+          return res.status(400).send({ error: 'Order is already cancelled' });
+        }
+
+        // Only the buyer who placed it OR the seller who owns the product can cancel.
+        const isBuyer = order.buyerInfo?.email === email;
+        const isSeller = order.sellerInfo?.email === email;
+        if (!isBuyer && !isSeller) {
+          return res.status(403).send({ error: 'Not authorized to cancel this order' });
+        }
+
+        // Restore stock back to the product — same quantity that was deducted.
+        if (order.productId && ObjectId.isValid(order.productId)) {
+          await productsCollections.updateOne(
+            { _id: new ObjectId(order.productId) },
+            { $inc: { stock: order.quantity || 1 } }
+          );
+        }
+
+        const result = await ordersCollections.updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $set: {
+              orderStatus: 'cancelled',
+              cancelledAt: new Date(),
+              cancelledBy: isSeller ? 'seller' : 'buyer',
+            },
+          }
+        );
+
+        res.send({ success: true, message: 'Order cancelled successfully', result });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: 'Failed to cancel order' });
       }
     });
 
