@@ -47,3 +47,4 @@ temp/
 
 # Package lock (optional)
 # package-lock.json
+.vercel
