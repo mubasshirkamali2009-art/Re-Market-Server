@@ -37,6 +37,7 @@ async function run() {
     const cartCollections = database.collection("carts");
     const ordersCollections = database.collection("orders");
     const reviewsCollections = database.collection("reviews");
+    const paymentsCollections = database.collection("payments");
 
     // =====================================================
     // PRODUCTS ENDPOINTS
@@ -650,6 +651,106 @@ async function run() {
       }
     });
 
+    // =====================================================
+    // PAYMENT HISTORY ENDPOINTS
+    // =====================================================
+
+    // ---- SAVE a completed payment (called from Next.js success page) ----
+    app.post('/api/payments', async (req, res) => {
+      try {
+        const {
+          stripeSessionId,
+          paymentIntentId,
+          paymentStatus,
+          amount,
+          currency,
+          customerEmail,
+          metadata,
+        } = req.body;
+
+        if (!stripeSessionId) {
+          return res.status(400).send({ error: 'stripeSessionId is required' });
+        }
+
+        // Avoid duplicate records if the success page is hit more than once
+        const existing = await paymentsCollections.findOne({ stripeSessionId });
+        if (existing) {
+          return res.send({ success: true, payment: existing, duplicate: true });
+        }
+
+        const paymentRecord = {
+          stripeSessionId,
+          paymentIntentId: paymentIntentId || null,
+          paymentStatus: paymentStatus || 'paid',
+          amount: Number(amount) || 0,
+          currency: currency || 'usd',
+          customerEmail: customerEmail || metadata?.userEmail || null,
+          productId: metadata?.productId || null,
+          productName: metadata?.name || null,
+          metadata: metadata || {},
+          createdAt: new Date(),
+        };
+
+        const result = await paymentsCollections.insertOne(paymentRecord);
+        res.status(201).send({
+          success: true,
+          payment: { _id: result.insertedId, ...paymentRecord },
+        });
+      } catch (error) {
+        console.error("Failed to save payment record:", error);
+        res.status(500).send({ error: 'Failed to save payment record' });
+      }
+    });
+
+    // ---- GET payment history for a buyer ----
+    app.get('/api/payments', async (req, res) => {
+      try {
+        const email = req.query.email;
+        if (!email) {
+          return res.status(400).send({ error: 'email query param is required' });
+        }
+
+        const result = await paymentsCollections
+          .find({ customerEmail: email })
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.send(result);
+      } catch (error) {
+        console.error("Failed to load payment history:", error);
+        res.status(500).send({ error: 'Failed to load payment history' });
+      }
+    });
+
+    // ---- GET single payment by Stripe session id ----
+    app.get('/api/payments/:sessionId', async (req, res) => {
+      try {
+        const { sessionId } = req.params;
+        const payment = await paymentsCollections.findOne({ stripeSessionId: sessionId });
+
+        if (!payment) {
+          return res.status(404).send({ error: 'Payment record not found' });
+        }
+        res.send(payment);
+      } catch (error) {
+        console.error("Failed to load payment:", error);
+        res.status(500).send({ error: 'Failed to load payment' });
+      }
+    });
+
+    // ---- ADMIN: GET all payments across the platform ----
+    app.get('/api/admin/payments', async (req, res) => {
+      try {
+        const result = await paymentsCollections
+          .find({})
+          .sort({ createdAt: -1 })
+          .toArray();
+        res.send(result);
+      } catch (error) {
+        console.error("Admin payments load failure:", error);
+        res.status(500).send({ error: 'Failed to aggregate global system payments.' });
+      }
+    });
 
     app.get('/api/admin/orders', async (req, res) => {
       try {
@@ -799,6 +900,8 @@ async function run() {
         res.status(500).send({ error: 'Failed to complete administrative user deletion.' });
       }
     });
+
+
 
 
     // Send a ping to confirm a successful connection
