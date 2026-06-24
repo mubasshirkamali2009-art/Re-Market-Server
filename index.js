@@ -657,6 +657,7 @@ async function run() {
 
     // ---- SAVE a completed payment (called from Next.js success page) ----
     app.post('/api/payments', async (req, res) => {
+      console.log("halle server")
       try {
         const {
           stripeSessionId,
@@ -692,6 +693,7 @@ async function run() {
         };
 
         const result = await paymentsCollections.insertOne(paymentRecord);
+        console.log(result)
         res.status(201).send({
           success: true,
           payment: { _id: result.insertedId, ...paymentRecord },
